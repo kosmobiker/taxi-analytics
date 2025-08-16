@@ -8,5 +8,6 @@ dependencies = [
     "clickhouse-connect>=0.8.18",
     "pandas>=2.3.1",
     "pyarrow>=21.0.0",
+    "ruff>=0.12.9",
     "tqdm>=4.67.1",
 ]

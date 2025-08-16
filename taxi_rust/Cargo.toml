@@ -1,6 +1,53 @@
 [package]
-name = "taxi_rust"
+name = "nyc-taxi-uploader"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "taxi-uploader"
+path = "src/main.rs"
 
 [dependencies]
+# Data processing
+polars = { version = "0.49", features = ["lazy", "temporal", "strings", "csv", "parquet"] }
+
+# ClickHouse client. The "derive" feature is crucial for #[derive(Row)].
+clickhouse = "0.12.2"
+clickhouse-derive = "0.2" # Add this line to get the derive macro
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# CLI and argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Serialization - ADD THIS LINE
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# URL parsing for connection string
+url = "2.5"
+
+# Logging and progress
+indicatif = "0.17"
+colored = "2.1"
+
+# File system operations
+walkdir = "2.5"
+glob = "0.3"
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+futures = "0.3"
+uuid = { version = "1.10", features = ["v4"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -9,9 +9,9 @@ import gc
 from typing import Generator
 import os
 import argparse
-
 from urllib.parse import urlparse
 import pyarrow.parquet as pq
+from datetime import date
 
 class TaxiDataUploader:
     """
@@ -67,7 +67,7 @@ class TaxiDataUploader:
             num_row_groups = parquet_file.num_row_groups
             total_rows = parquet_file.metadata.num_rows
 
-            print(f"  Total rows in file: {total_rows:,}, across {num_row_groups} row groups.")
+            print(f"  Total rows in file: {total_rows:,}, across {num_row_groups} row groups.")
 
             for i in tqdm(range(num_row_groups), desc="Processing row groups"):
                 table = parquet_file.read_row_group(i)
@@ -103,7 +103,7 @@ class TaxiDataUploader:
 
         try:
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            print(f"  📁 File size: {file_size_mb:.1f} MB")
+            print(f"  📁 File size: {file_size_mb:.1f} MB")
 
             for batch in tqdm(self.process_parquet_in_batches(file_path), desc=f"Uploading {file_name}", unit="batch"):
                 total_processed += len(batch)
@@ -143,16 +143,26 @@ class TaxiDataUploader:
                 'time_seconds': time.time() - start_time
             }
             
-    def upload_all_files(self, data_path: str, file_pattern: str) -> None:
+    def upload_all_files(self, data_path: str, file_pattern: str, specific_files: list = None) -> None:
         """Upload all files matching a pattern from the specified directory."""
-        pattern = f"{data_path}/{file_pattern}"
-        parquet_files = sorted(glob.glob(pattern))
+        if specific_files:
+            print(f"🔍 Uploading specific files as requested.")
+            all_files_in_dir = {Path(p).name: p for p in glob.glob(f"{data_path}/{file_pattern}")}
+            parquet_files = []
+            for f in specific_files:
+                if f in all_files_in_dir:
+                    parquet_files.append(all_files_in_dir[f])
+                else:
+                    print(f"❌ Warning: File '{f}' not found in the data directory. Skipping.")
+        else:
+            print(f"🔍 Found files matching pattern: {file_pattern}")
+            parquet_files = sorted(glob.glob(f"{data_path}/{file_pattern}"))
         
         if not parquet_files:
             print(f"❌ No files found in {data_path} matching pattern: {file_pattern}")
             return
             
-        print(f"🔍 Found {len(parquet_files)} files to upload.")
+        print(f"📊 Found {len(parquet_files)} files to upload.")
         total_size_mb = sum(os.path.getsize(file) for file in parquet_files) / (1024 * 1024)
         print(f"📊 Total data size: {total_size_mb:.1f} MB")
         
@@ -183,23 +193,23 @@ class TaxiDataUploader:
         print(f"🎉 UPLOAD COMPLETE FOR TABLE '{self.table_name}'!")
         print(f"{'='*60}")
         print(f"📈 Summary:")
-        print(f"  ✅ Successful files: {len(successful_files)}")
-        print(f"  ❌ Failed files: {len(failed_files)}")
-        print(f"  📊 Total rows processed: {total_rows_processed:,}")
-        print(f"  ⬆️  Total rows uploaded: {total_rows_uploaded:,}")
-        print(f"  🗑️  Total rows filtered: {total_rows_processed - total_rows_uploaded:,}")
-        print(f"  📁 Total data processed: {total_size_mb:.1f} MB")
-        print(f"  🕒 Total time: {total_elapsed:.1f} seconds ({total_elapsed/60:.1f} minutes)")
-        print(f"  ⚡ Overall speed: {total_rows_uploaded/total_elapsed:,.0f} rows/sec")
-        print(f"  💾 Throughput: {total_size_mb/total_elapsed:.1f} MB/sec")
+        print(f"  ✅ Successful files: {len(successful_files)}")
+        print(f"  ❌ Failed files: {len(failed_files)}")
+        print(f"  📊 Total rows processed: {total_rows_processed:,}")
+        print(f"  ⬆️  Total rows uploaded: {total_rows_uploaded:,}")
+        print(f"  🗑️  Total rows filtered: {total_rows_processed - total_rows_uploaded:,}")
+        print(f"  📁 Total data processed: {total_size_mb:.1f} MB")
+        print(f"  🕒 Total time: {total_elapsed:.1f} seconds ({total_elapsed/60:.1f} minutes)")
+        print(f"  ⚡ Overall speed: {total_rows_uploaded/total_elapsed:,.0f} rows/sec")
+        print(f"  💾 Throughput: {total_size_mb/total_elapsed:.1f} MB/sec")
         
         try:
             row_count = self.client.query(f"SELECT COUNT(*) FROM {self.table_name}").result_rows[0][0]
-            print(f"  🔍 Verified in ClickHouse: {row_count:,} rows in {self.table_name}")
+            print(f"  🔍 Verified in ClickHouse: {row_count:,} rows in {self.table_name}")
             stats = self.client.query(f"SELECT MIN(pickup_date), MAX(pickup_date), COUNT(DISTINCT pickup_date) FROM {self.table_name}").result_rows[0]
-            print(f"  📅 Date range: {stats[0]} to {stats[1]} ({stats[2]} unique days)")
+            print(f"  📅 Date range: {stats[0]} to {stats[1]} ({stats[2]} unique days)")
         except Exception as e:
-            print(f"  ❌ Could not verify data in ClickHouse: {str(e)}")
+            print(f"  ❌ Could not verify data in ClickHouse: {str(e)}")
 
 # =================================================================================
 # Specific Uploader Classes for Yellow and Green Taxi Data
@@ -210,11 +220,10 @@ class YellowTaxiUploader(TaxiDataUploader):
         super().__init__(connection_string, "yellow_taxi_trips", batch_size)
 
     def transform_batch(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply transformations to a batch of yellow taxi data."""
+        """Apply transformations and filtering to a batch of yellow taxi data."""
         df = df.copy()
 
         # Handle inconsistent column casing and rename to a consistent format
-        # This fixes the 'airport_fee' vs 'Airport_fee' issue
         column_mappings = {
             'tpep_pickup_datetime': 'tpep_pickup_datetime',
             'tpep_dropoff_datetime': 'tpep_dropoff_datetime',
@@ -230,21 +239,25 @@ class YellowTaxiUploader(TaxiDataUploader):
         # Rename columns to a consistent casing
         df.columns = [column_mappings.get(col, col) for col in df.columns]
 
+        # Fix for FutureWarning: Fill NaNs *before* mapping to prevent downcasting issues.
+        df['store_and_fwd_flag'] = df['store_and_fwd_flag'].fillna('N').map({'Y': True, 'N': False})
+        
+        # Fix for the new FutureWarning: Convert column to numeric before filling NaNs.
+        if 'Airport_fee' in df.columns:
+            df['Airport_fee'] = pd.to_numeric(df['Airport_fee'], errors='coerce').fillna(0)
+
         # Convert to appropriate dtypes for ClickHouse
-        # Handle missing values with appropriate defaults (avoid Nullable types)
         df['passenger_count'] = df['passenger_count'].fillna(1).astype('uint8')
         df['RatecodeID'] = df['RatecodeID'].fillna(1).astype('uint8')
-        df['store_and_fwd_flag'] = df['store_and_fwd_flag'].map({'Y': True, 'N': False}).fillna(False)
         df['congestion_surcharge'] = df['congestion_surcharge'].fillna(0)
-        df['Airport_fee'] = df['Airport_fee'].fillna(0)
         df['PULocationID'] = df['PULocationID'].astype('uint16')
         df['DOLocationID'] = df['DOLocationID'].astype('uint16')
         df['payment_type'] = df['payment_type'].astype('uint8')
         
         # Optimize Float64 to Float32
         float_cols = ['trip_distance', 'fare_amount', 'extra', 'mta_tax', 'tip_amount',
-                        'tolls_amount', 'improvement_surcharge', 'total_amount', 
-                        'congestion_surcharge', 'Airport_fee']
+                      'tolls_amount', 'improvement_surcharge', 'total_amount', 
+                      'congestion_surcharge', 'Airport_fee']
         for col in float_cols:
             if col in df.columns:
                 df[col] = df[col].astype('float32')
@@ -258,20 +271,20 @@ class YellowTaxiUploader(TaxiDataUploader):
         df['tip_percentage'] = np.where(df['fare_amount'] > 0, (df['tip_amount'] / df['fare_amount'] * 100), 0.0).clip(0, 100).astype('float32')
         df['avg_speed_mph'] = np.where(df['trip_duration_minutes'] > 0, (df['trip_distance'] / (df['trip_duration_minutes'] / 60)), 0.0).clip(0, 100).astype('float32')
         
-        # Data quality filters
+        # Less strict data quality filters and date validation
         initial_rows = len(df)
         df = df[
+            (df['tpep_pickup_datetime'].dt.date >= pd.to_datetime('2020-01-01').date()) &
+            (df['tpep_pickup_datetime'].dt.date <= date.today()) &
             (df['trip_distance'] > 0) &
-            (df['trip_distance'] < 200) &
-            (df['trip_duration_minutes'] > 0.5) &
-            (df['trip_duration_minutes'] <= 480) &
-            (df['fare_amount'] > 0) &
-            (df['fare_amount'] < 1000) &
-            (df['total_amount'] > 0) &
-            (df['total_amount'] < 1000)
+            (df['trip_distance'] < 500) &
+            (df['trip_duration_minutes'] > 0) &
+            (df['trip_duration_minutes'] <= 1440) &
+            (df['fare_amount'] >= 0) &
+            (df['total_amount'] >= 0)
         ].copy()
         
-        print(f"  📊 Filtered out {initial_rows - len(df):,} rows with data quality issues.")
+        print(f"  📊 Filtered out {initial_rows - len(df):,} rows with data quality issues.")
         return df
         
 class GreenTaxiUploader(TaxiDataUploader):
@@ -279,7 +292,7 @@ class GreenTaxiUploader(TaxiDataUploader):
         super().__init__(connection_string, "green_taxi_trips", batch_size)
 
     def transform_batch(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply transformations to a batch of green taxi data."""
+        """Apply transformations and filtering to a batch of green taxi data."""
         df = df.copy()
 
         # Handle inconsistent column casing and rename to a consistent format
@@ -296,17 +309,13 @@ class GreenTaxiUploader(TaxiDataUploader):
         # Drop columns not in the target schema
         columns_to_drop = ['ehail_fee']
         df = df.drop(columns=[col for col in columns_to_drop if col in df.columns], errors='ignore')
+        
+        # Fix for FutureWarning: Fill NaNs *before* mapping
+        df['store_and_fwd_flag'] = df['store_and_fwd_flag'].fillna('N').map({'Y': True, 'N': False})
 
         # Convert to appropriate dtypes for ClickHouse
-        # Handle missing values with appropriate defaults
         df['passenger_count'] = df['passenger_count'].fillna(1).astype('uint8')
         df['RatecodeID'] = df['RatecodeID'].fillna(1).astype('uint8')
-        
-        # FIX: The FutureWarning is caused by `fillna(False)` on a series that has
-        # been converted to object type by `.map()`.
-        # To fix this, fill the NaNs first, then map.
-        df['store_and_fwd_flag'] = df['store_and_fwd_flag'].fillna('N').map({'Y': True, 'N': False})
-        
         df['congestion_surcharge'] = df['congestion_surcharge'].fillna(0)
         df['PULocationID'] = df['PULocationID'].astype('uint16')
         df['DOLocationID'] = df['DOLocationID'].astype('uint16')
@@ -329,17 +338,17 @@ class GreenTaxiUploader(TaxiDataUploader):
         df['tip_percentage'] = np.where(df['fare_amount'] > 0, (df['tip_amount'] / df['fare_amount'] * 100), 0.0).clip(0, 100).astype('float32')
         df['avg_speed_mph'] = np.where(df['trip_duration_minutes'] > 0, (df['trip_distance'] / (df['trip_duration_minutes'] / 60)), 0.0).clip(0, 100).astype('float32')
         
-        # Data quality filters
+        # Less strict data quality filters and date validation
         initial_rows = len(df)
         df = df[
+            (df['lpep_pickup_datetime'].dt.date >= pd.to_datetime('2020-01-01').date()) &
+            (df['lpep_pickup_datetime'].dt.date <= date.today()) &
             (df['trip_distance'] > 0) &
-            (df['trip_distance'] < 200) &
-            (df['trip_duration_minutes'] > 0.5) &
-            (df['trip_duration_minutes'] <= 480) &
-            (df['fare_amount'] > 0) &
-            (df['fare_amount'] < 1000) &
-            (df['total_amount'] > 0) &
-            (df['total_amount'] < 1000)
+            (df['trip_distance'] < 500) &
+            (df['trip_duration_minutes'] > 0) &
+            (df['trip_duration_minutes'] <= 1440) &
+            (df['fare_amount'] >= 0) &
+            (df['total_amount'] >= 0)
         ].copy()
         
         print(f"  📊 Filtered out {initial_rows - len(df):,} rows with data quality issues.")
@@ -363,6 +372,11 @@ if __name__ == "__main__":
         default='all',
         help='Specify which taxi data to upload (yellow, green, or all). Defaults to all.'
     )
+    parser.add_argument(
+        '--files',
+        type=str,
+        help='Comma-separated list of specific parquet filenames to upload (e.g., "yellow_tripdata_2020-01.parquet,yellow_tripdata_2020-02.parquet").'
+    )
     args = parser.parse_args()
     
     print("🚕 NYC Taxi Data Uploader")
@@ -384,15 +398,17 @@ if __name__ == "__main__":
         else:
             taxi_types = [args.taxi_type]
             
+        # Parse specified files if the argument is provided
+        specific_files_list = [f.strip() for f in args.files.split(',')] if args.files else None
+            
         # Create and run uploaders for the selected taxi type(s)
         for taxi_type in taxi_types:
             if taxi_type == "yellow":
                 uploader = YellowTaxiUploader(CONNECTION_STRING)
-                uploader.upload_all_files(DATA_PATH, "yellow_tripdata_*.parquet")
+                uploader.upload_all_files(DATA_PATH, "yellow_tripdata_*.parquet", specific_files_list)
             elif taxi_type == "green":
-                # The corrected uploader with the fix
                 uploader = GreenTaxiUploader(CONNECTION_STRING)
-                uploader.upload_all_files(DATA_PATH, "green_tripdata_*.parquet")
+                uploader.upload_all_files(DATA_PATH, "green_tripdata_*.parquet", specific_files_list)
             
             print("\n" + "="*60)
             print(f"Completed processing for {taxi_type.upper()} taxi data.")
